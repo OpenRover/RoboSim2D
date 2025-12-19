@@ -112,7 +112,7 @@ class SimulationBase:
 
         direct_navigable: bool = False
 
-        def render(cursor: Point[int] | None = None):
+        def render(cursor: Point[int] | None = None, wait_key: int | None = None):
             img = vis.view
             if cursor:
                 if src_pixel is None:
@@ -130,7 +130,7 @@ class SimulationBase:
             if src_pixel and dst_pixel:
                 color = (0, 192, 0) if direct_navigable else (0, 0, 255)
                 vis.line(img, src_pixel, dst_pixel, color)
-            vis.show(img)
+            vis.show(img, wait_key=wait_key)
 
         def onMouse(event, x, y, flags, _: None):
             nonlocal src_pixel, src_pos, dst_pixel, dst_pos, direct_navigable
@@ -148,7 +148,7 @@ class SimulationBase:
                     direct_navigable = vis.world.checkLine(
                         src_pos, dst_pos, self.radius
                     )
-            render(cursor)
+            render(cursor, None)
 
         render()
         cv2.setMouseCallback(vis.handle, onMouse)

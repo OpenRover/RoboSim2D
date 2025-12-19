@@ -8,6 +8,12 @@ from pathlib import Path
 from sys import stdin, stderr, exit
 from yaml import safe_load
 import numpy as np
+from tqdm import tqdm
+
+try:
+    from regression import Regression
+except ImportError:
+    from .regression import Regression
 
 meta = safe_load(stdin.read())
 ours = list[float]()
@@ -15,18 +21,41 @@ ours_total: int = 0
 ours_failure: int = 0
 
 parser = ArgumentParser()
-parser.add_argument("root", type=Path, nargs="?", default=[Path("results")])
+parser.add_argument("root", type=str, nargs="?", default="results")
+parser.add_argument(
+    "--load", type=str, default=None, help="Load regression model from file"
+)
 parser.add_argument("--latex", action="store_true")
 parser.add_argument("--plot", action="store_true")
 parser.add_argument("--animate", action="store_true")
-root: Path = parser.parse_args().root[0]
-should_write_latex = bool(parser.parse_args().latex)
-should_plot = bool(parser.parse_args().plot)
-should_animate = bool(parser.parse_args().animate)
+args = parser.parse_args()
+root: Path = Path(args.root)
+load_model = str(args.load) if args.load is not None else None
+should_write_latex = bool(args.latex)
+should_plot = bool(args.plot)
+should_animate = bool(args.animate)
 
-if not any([should_write_latex, should_plot, should_animate]):
-    parser.print_usage()
-    parser.print_help()
+from dataclasses import dataclass
+
+
+@dataclass
+class AdditionalData:
+    sr: float
+    spl: float
+    marker: str = "o"
+
+    @property
+    def pl(self):
+        return self.spl / self.sr
+
+
+additional = dict(
+    VLnav0=AdditionalData(sr=0.504, spl=0.21, marker="^"),
+    VLnav=AdditionalData(sr=0.332, spl=0.136),
+    GOAT0=AdditionalData(sr=0.83, spl=0.64, marker="^"),
+    GOAT=AdditionalData(sr=0.61, spl=0.19),
+)
+
 
 if not root.is_dir():
     print(f"{dir} is not a directory", file=stderr)
@@ -52,7 +81,7 @@ class BugAlgorithm:
             self.data.append(meta["travel"] / baseline)
 
     def stat(self):
-        v = np.array(sorted(self.data))
+        v = 1 / np.array(sorted(self.data))
         x = len(v) / (len(v) + self.failures)
         return v.mean(), v.std(), x
 
@@ -85,7 +114,7 @@ class BatchSampler:
 
     def stat(self, success_rate: float):
         i = int(len(self.data) * success_rate)
-        v = np.array(list(sorted(self.data))[:i])
+        v = 1 / np.array(list(sorted(self.data))[:i])
         return v.mean(), v.std(), success_rate
 
     @property
@@ -134,7 +163,7 @@ class WaveFront:
         return baseline
 
     def stat(self, success_rate: float):
-        T, P, DP = np.array(self.T), np.array(self.P), np.array(self.DP)
+        T, P, DP = (1 / np.array(self.T)), np.array(self.P), np.array(self.DP)
         indices = P <= success_rate
         T, DP = T[indices], DP[indices]
         return (
@@ -173,6 +202,7 @@ for d in dirs(root):
     baseline = WF(d / "wavefront.txt")
     if baseline is None:
         raise ValueError(f"Wavefront @{d.name} has no baseline")
+    # print(f"# Baseline of {d} = {baseline:.4f}")
     RW(d / "RandomWalk.list", baseline)
     WB(d / "WallBounce.list", baseline)
     Bug0(d / "Bug0L.txt", baseline)
@@ -186,10 +216,55 @@ for d in dirs(root):
     ours_total += 3
     if len(v) < 3:
         ours_failure += 3 - len(v)
-    ours.extend((t / baseline for t in meta[d.name]))
+    ours.extend((baseline / t for t in meta[d.name]))
 
 
-ours_success_rate = (ours_total - ours_failure) / ours_total
+ours_sr = (ours_total - ours_failure) / ours_total
+
+# Train Regression Model
+from torch import tensor, from_numpy
+from torch.nn import Parameter
+
+model = Regression()
+
+if load_model is None:
+    with tqdm(
+        total=40000, desc=f"Training Regression Model (loss={0:.8f})", leave=False
+    ) as progress:
+        R, L, _ = RW.result
+        with open("rw-curve.local.txt", "w") as f:
+            for x, y in zip(R, L):
+                f.write(f"{x} {y}\n")
+        E = tensor([0.0] * len(R) + [1.0], requires_grad=False)
+        R = tensor(list(R) + [1.0], requires_grad=False)
+        L = tensor(list(L) + [1.0], requires_grad=False)
+        for i, loss in enumerate(model.train(L, R, E, learning_rate=1e-4)):
+            if i % 100 == 0:
+                progress.set_description(f"Training Regression Model (loss={loss:.8f})")
+                progress.n = i
+                progress.refresh()
+            if i >= 40000:
+                break
+    with open("regression.local.yaml", "w") as f:
+        from yaml import safe_dump
+
+        safe_dump({k: v.item() for k, v in model.__dict__().items()}, f)
+else:
+    with open(load_model, "rt") as f:
+        from yaml import safe_load
+
+        params: dict[str, float] = safe_load(f)
+        for k, v in params.items():
+            p = getattr(model, k, None)
+            if not isinstance(p, Parameter):
+                raise ValueError(f"Invalid parameter key: {k}")
+            p.data = tensor(v, dtype=p.dtype)
+
+
+if not any([should_write_latex, should_plot, should_animate]):
+    parser.print_usage()
+    parser.print_help()
+    exit(1)
 
 # DATA REPORTING
 if should_write_latex:
@@ -201,44 +276,71 @@ if should_write_latex:
             return v
         return "\\z" + v.rjust(l)
 
-    def report(name: str, mean: float, std: float, success_rate: float):
+    def report(name: str, pl: float, std: float, sr: float, epsilon: float):
         print(name, "&")
-        s = pz(f"{success_rate * 100:.2f}", 6)
-        a = pz(f"{mean:.2f}", 5)
-        b = pz(f"{std:.2f}", 4)
+        s = pz(f"{sr * 100:.2f}", 6)
+        a = pz(f"{pl:.2f}", 5)
+        b = pz(f"{std:.2f}", 4) if std is not None else None
+        SPL = pz(f"{sr * pl:.2f}", 4)
         print(f"${s}\\%$", "&")
-        print(f"${a}$\\small{{$\\pm {b}$}}", "&")
+        if b is not None:
+            print(f"${a}$\\small{{$\\pm {b}$}}", "&")
+        else:
+            print(f"${a}$", "&")
+        print(f"${SPL}$", "&")
+        if epsilon is not None:
+            EPS = pz(f"{epsilon:.2f}", 4)
+            print(f"${EPS}$", "&")
+        else:
+            print("--", "&")
         print("--", "\\\\")
 
-    report(
-        "\\textbf{ClipRover\\,\\ding{72}}",
-        np.mean(ours),
-        np.std(ours),
-        ours_success_rate,
-    )
+    pl = float(np.mean(ours))
+    std = float(np.std(ours))
+    sr = ours_sr
+    report("\\textbf{ClipRover\\,\\ding{72}}", pl, std, sr, model.E(pl, sr))
     print("\\hline")
 
-    report("\\multirow{2}{*}{Random\\,Walk}", *RW.stat(0.5))
+    R, L, _ = RW.result
+    eps = model.E(from_numpy(L), from_numpy(R)).numpy().mean()
+    report("\\multirow{2}{*}{Random\\,Walk}", *RW.stat(0.5), eps)
     print("\\cline{2-3}")
-    report("", *RW.stat(0.8))
+    report("", *RW.stat(0.8), eps)
     print("\\hline")
 
-    report("\\multirow{2}{*}{Wall\\,Bounce}", *WB.stat(0.5))
+    R, L, _ = WB.result
+    eps = model.E(from_numpy(L), from_numpy(R)).numpy().mean()
+    report("\\multirow{2}{*}{Wall\\,Bounce}", *WB.stat(0.5), eps)
     print("\\cline{2-3}")
-    report("", *WB.stat(0.8))
+    report("", *WB.stat(0.8), eps)
     print("\\hline")
 
-    report("\\multirow{2}{*}{Wave\\,Front}", *WF.stat(0.5))
+    R, L, _ = WF.result
+    eps = model.E(from_numpy(L), from_numpy(R)).numpy().mean()
+    report("\\multirow{2}{*}{Wave\\,Front}", *WF.stat(0.5), eps)
     print("\\cline{2-3}")
-    report("", *WF.stat(0.8))
+    report("", *WF.stat(0.8), eps)
 
     print("\\Xhline{2\\arrayrulewidth}")
 
-    report("Bug 0", *Bug0.stat())
+    R, L, _ = Bug0.result
+    eps = model.E(L, R)
+    report("Bug 0", *Bug0.stat(), eps)
     print("\\hline")
-    report("Bug 1", *Bug1.stat())
+    R, L, _ = Bug1.result
+    eps = model.E(L, R)
+    report("Bug 1", *Bug1.stat(), eps)
     print("\\hline")
-    report("Bug 2", *Bug2.stat())
+    R, L, _ = Bug2.result
+    eps = model.E(L, R)
+    report("Bug 2", *Bug2.stat(), eps)
+
+    print("\\Xhline{2\\arrayrulewidth}")
+
+    for name, data in additional.items():
+        report(name, data.pl, None, data.sr, None)
+
+    print("\\Xhline{2\\arrayrulewidth}")
 
 # PLOTTING
 if not should_plot and not should_animate:
@@ -269,40 +371,16 @@ def init_figure():
     return fig, ax
 
 
-def EPL(
-    epsilon: float,
-    alpha: float = 1.0,
-    omega=4,
-    y0=1.0,
-    y1=0.09,
-    X=np.linspace(0, 1, 100),
-):
-    X = np.array(X)
-    _eps = 1.0 + omega * epsilon
-    beta = alpha * _eps
-    t = 1 / (y0 ** (1 / beta))
-    t2 = 1 / (y1 ** (1 / beta))
-    k = t2 - t
-    _X = (k * X + t) ** beta
-    # _eps = _eps ** beta
-    Y = _eps / _X
-    return X, Y
+def EPL(epsilon: float):
+    x0 = model.R(1.0, epsilon)
+    L = tensor(np.linspace(x0, 1.0, 100), requires_grad=False)
+    R = model.R(L, epsilon)
+    return R.detach().numpy(), L.detach().numpy()
 
-
-def find_OMG(alpha: float, y0=1.0, y1=0.09):
-    epl = lambda omg: abs(EPL(1.0, alpha, omg, y0, y1, X=[1.0])[1][0] - 1)
-    OMG = [(epl(omg), omg) for omg in np.linspace(9, 15, 1000)]
-    OMG = sorted(OMG, key=lambda x: x[0])
-    return OMG[0][1]
-
-
-alpha = 0.75
-omega = find_OMG(alpha)
 
 if should_plot:
     fig, ax = init_figure()
     x, y, e = RW.result
-    print(x[-1], y[-1], e[-1])
     ax.plot(100 * x, y, color="gray", linestyle="--")
 
     ax.fill_between(100 * x, y - e, y + e, alpha=0.2, color="gray")
@@ -353,9 +431,29 @@ if should_plot:
     ebar(ax, *Bug1.result, label="Bug1", color="green")
     ebar(ax, *Bug2.result, label="Bug2", color="red")
 
+    for name, data in additional.items():
+        x, y = data.sr, data.pl
+        ax.plot(
+            100 * x,
+            y,
+            marker=data.marker,
+            markersize=6,
+            color="gray",
+        )
+        ax.text(
+            100 * x - 2,
+            y,
+            name,
+            ha="right",
+            va="center",
+            fontsize=16,
+            color="gray",
+            fontweight="bold",
+        )
+
     # Our results
-    v = [1 / v for v in ours]
-    x = ours_success_rate
+    v = ours
+    x = ours_sr
     avg = np.mean(v)
     std = np.std(v) / 2
 
@@ -377,11 +475,11 @@ if should_plot:
             a += s
 
     # Equipotential lines
-    for epsilon in steps(0.1, 0.9, 0.1):
-        X, Y = EPL(epsilon, alpha, omega, y0=1.0, y1=0.1)
+    for epsilon in steps(0.0, 0.9, 0.1):
+        X, Y = EPL(epsilon)
         ax.plot(100 * X, Y, color="gray", linestyle="--", linewidth=0.8)
 
-    fig.savefig("summary.pdf")
+    fig.savefig("summary.local.pdf")
 
     fig.show()
     plt.show()
@@ -432,9 +530,9 @@ if should_animate:
 
     # Equipotential lines
     for epsilon in np.linspace(0, 1, 1200):
-        X, Y = EPL(epsilon, alpha, omega, y0=1.0, y1=0.1)
+        X, Y = EPL(epsilon)
         line.set_data(100 * X, Y)
-        x0 = search(X, Y, 1.0)
+        x0 = max(X[0], 0.0)
         dot.set_data([100 * x0], [1.03])
         if label is not None:
             label.remove()

@@ -16,7 +16,11 @@ DST: dict[str, tuple[float, float]] = manifest["DST"]
 
 parser = ArgumentParser()
 parser.add_argument("root", type=Path, nargs=1)
+parser.add_argument(
+    "--base", type=str, default="base", help="Base name for the output files"
+)
 root: Path = parser.parse_args().root[0]
+base = str(parser.parse_args().base)
 
 if not root.is_dir():
     print(f"{dir} is not a directory", file=stderr)
@@ -175,18 +179,18 @@ for d in dirs(root):
     runs = [f for f in files(d) if f.suffix == ".txt" and f.stem.startswith("Bug")]
     runs.sort(key=lambda p: p.stem)
     S, T = d.name.split("-")
-    base = dict(base="base", type="sim", start_pos=SRC[S], target_pos=DST[T])
+    meta = dict(base=base, type="sim", start_pos=SRC[S], target_pos=DST[T])
     with (d.parent / (d.name + "-Bug-L.json")).open("wt") as f:
         trj = aggregate(*(r for r in runs if r.stem.endswith("L")))
         dump(
-            base | dict(trajectories=trj),
+            meta | dict(trajectories=trj),
             f,
             indent="\t",
         )
     with (d.parent / (d.name + "-Bug-R.json")).open("wt") as f:
         trj = aggregate(*(r for r in runs if r.stem.endswith("R")))
         dump(
-            base | dict(trajectories=trj),
+            meta | dict(trajectories=trj),
             f,
             indent="\t",
         )

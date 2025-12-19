@@ -3,6 +3,7 @@ __pycache__
 var
 tmp
 results
+results-*
 recording
 *.pdf
 *.log

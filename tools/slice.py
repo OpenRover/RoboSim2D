@@ -17,7 +17,6 @@ out = Output(**args)
 img_path = out(suffix="png")
 if vis.visualize:
     s = vis.scale
-
     if vis.raw_slice is not None:
         x, y, w, h = vis.raw_slice
     else:

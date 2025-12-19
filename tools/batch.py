@@ -21,7 +21,7 @@ WATCH_LIST: list[tuple[str, str, str]] = [
     # ("SW", "NE", "Bug1L"),
 ]
 
-SLICE = {"slice": "19,7,320,360"}
+# SLICE = {"slice": "19,7,320,360"}
 
 
 def cmdlineFlag(s: str) -> str:
@@ -179,31 +179,52 @@ def unpack_exec(args):
     return exec(*args)
 
 
-PList = dict[str, list[float]]
+type PList = dict[str, list[float]]
+type Combs = list[tuple[str, str]]
+
+
+def combs_preset(SRC: PList, DST: PList, combinations: Combs):
+    for src, dst in combinations:
+        if src not in SRC or dst not in DST:
+            raise ValueError(f"Missing {src} or {dst} in batch configuration")
+        yield src, SRC[src], dst, DST[dst]
+
+
+def combs_shuffle(SRC: PList, DST: PList):
+    for src, p0 in SRC.items():
+        for dst, p1 in DST.items():
+            if src == dst:
+                continue
+            yield src, p0, dst, p1
 
 
 def combinations(
     world: str,
     SRC: PList,
     DST: PList,
+    combinations: Combs | None = None,
     save: bool = False,
     **kw: dict[str, Any],
 ):
     if SRC is None or DST is None:
         raise ValueError("Missing SRC or DST in batch configuration")
 
-    for src, p0 in SRC.items():
-        for dst, p1 in DST.items():
-            if src == dst:
-                continue
-            local_kw = dict(
-                **kw,
-                src=",".join(map(str, p0)),
-                dst=",".join(map(str, p1)),
-            )
-            if save:
-                local_kw = dict(prefix=f"results/{src}-{dst}/", **local_kw)
-            yield world, src, dst, local_kw
+    world_name = Path(world).name
+    combs = (
+        combs_preset(SRC, DST, combinations)
+        if combinations
+        else combs_shuffle(SRC, DST)
+    )
+
+    for src, p0, dst, p1 in combs:
+        local_kw = dict(
+            **kw,
+            src=",".join(map(str, p0)),
+            dst=",".join(map(str, p1)),
+        )
+        if save:
+            local_kw = dict(prefix=f"results/{src}-{dst}/", **local_kw)
+        yield world, src, dst, local_kw
 
 
 def factory(f):
@@ -435,30 +456,28 @@ def runWaveFrontSync(combs: Combs, META: dict = {}):
 if __name__ == "__main__":
     register()
     parser = ArgumentParser(prog="python3 -m batch")
-    parser.add_argument("world", type=str, nargs=1)
+    parser.add_argument("--world", type=str, default=None)
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--max-travel", type=float, default=1000)
     args = parser.parse_args()
-    world = str(args.world[0])
     demo = bool(args.demo)
     KW = dict(
         radius=0.255,
         resolution=0.025,
         scale=2.0,
         maxTravel=float(args.max_travel),
-        **SLICE,
+        # **SLICE,
     )
     META = dict[str, any]()
     # Generate world view
-    Python("tools.slice")(world, prefix="results/world", scale=4, **SLICE).wait()
+    # Python("tools.slice")(world, prefix="results/world", scale=4, **SLICE).wait()
     config = parse(stdin)
-    SRC, DST = config["SRC"], config["DST"]
-    runBugAlgorithms(combinations(world, SRC, DST, **KW, save=True), META=META)
+    runBugAlgorithms(combinations(**config, **KW, save=True), META=META)
     if demo:
         exit(0)
-    runBatchSampler(combinations(world, SRC, DST, **KW), RandomWalk(), META=META)
-    runBatchSampler(combinations(world, SRC, DST, **KW), WallBounce(), META=META)
-    runWaveFrontPool(combinations(world, SRC, DST, **KW, save=True), META=META)
+    runBatchSampler(combinations(**config, **KW), RandomWalk(), META=META)
+    runBatchSampler(combinations(**config, **KW), WallBounce(), META=META)
+    runWaveFrontPool(combinations(**config, **KW, save=True), META=META)
     # Save meta
     meta_path = Path("results/meta.yaml")
     with meta_path.open("w") as f:

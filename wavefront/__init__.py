@@ -346,7 +346,7 @@ class WaveFront(SimulationBase):
 
         if wf.vis.visualize and not wf.vis.no_wait:
             render(u, p)
-            handle = renderVis()
+            handle, _, _ = renderVis()
             cv2.createTrackbar(
                 "AMP", handle, int(amp * 10), 100, lambda v: renderVis(v / 10.0)
             )

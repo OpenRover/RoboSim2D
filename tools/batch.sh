@@ -3,4 +3,4 @@
 # Author : Yuxuan Zhang (robotics@z-yx.cc)
 # License: MIT
 # ==============================================================================
-cat manifest.yaml | python3 tools/batch.py data/world $@ 2> batch.log
+cat manifest-PERC.yaml | python3 tools/batch.py $@ 2> batch.log

@@ -207,7 +207,11 @@ class Visualization:
         return self.world.name
 
     def show(
-        self, img: np.ndarray, desc: str | None = None, scale=None, wait_key: int = 1
+        self,
+        img: np.ndarray,
+        desc: str | None = None,
+        scale=None,
+        wait_key: int | None = 1,
     ) -> tuple[str, np.ndarray, int]:
         if scale is not None:
             s = 1 / scale
@@ -221,7 +225,10 @@ class Visualization:
             title = f"{self.handle} ({desc})"
         if self.visualize:
             cv2.imshow(title, img)
-            key = cv2.waitKey(wait_key)
+            if wait_key is not None:
+                key = cv2.waitKey(wait_key)
+            else:
+                key = -1
         else:
             key = -1
         return title, img, key
